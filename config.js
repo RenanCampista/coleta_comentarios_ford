@@ -1,3 +1,3 @@
 module.exports = {
-    EXPORT_COMMENTS_KEY: ""
+    "EXPORT_COMMENTS_KEY": ""
 };

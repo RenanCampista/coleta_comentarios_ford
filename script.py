@@ -1,30 +1,27 @@
 """Baixa os comentários de posts coletados pelo ExportComments. O arquivo a ser lido deve estar no formato XLSX."""
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from py_mini_racer import py_mini_racer
 from typing import Optional
 from enum import Enum
 from time import sleep
 import pandas as pd
-import sys
 import requests
 import json
+import sys
 import argparse
 
 KEY = None
 try:
-    ctx = py_mini_racer.MiniRacer()
-    with open('config.js', 'r') as f:
-        config_js = f.read()
-    config_js = config_js.replace('module.exports =', 'var config =')
-    config = ctx.execute(f"{config_js}; config;")
-    print("Config:", config)
+    with open("config.js", "r") as f:
+        content = f.read()
+    json_content = content.replace('module.exports =', '').strip().rstrip(';')
+    config = json.loads(json_content)
     KEY = config["EXPORT_COMMENTS_KEY"]
-except (FileNotFoundError, KeyError, py_mini_racer.JSEvalException) as e:
-    print(f"Error loading configuration: {e}")
+except (json.JSONDecodeError, FileNotFoundError, KeyError) as e:
+    print("Arquivo de configuração 'config.js' não encontrado ou chave 'EXPORT_COMMENTS_KEY' não definida.")
     sys.exit(1)
-except py_mini_racer.JSParseException as e:
-    print(f"JavaScript parsing error: {e}")
+except Exception as e:
+    print(f"Erro ao ler a chave da API: {e}")
     sys.exit(1)
 
 BASE_URL = "https://exportcomments.com"
