@@ -1,24 +1,30 @@
-import os
-import sys
-import requests
-import json
-from time import sleep
-import pandas as pd
+"""Baixa os comentários de posts coletados pelo ExportComments. O arquivo a ser lido deve estar no formato XLSX."""
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from py_mini_racer import py_mini_racer
 from typing import Optional
 from enum import Enum
+from time import sleep
+import pandas as pd
+import sys
+import requests
+import json
 import argparse
 
-
+KEY = None
 try:
     ctx = py_mini_racer.MiniRacer()
     with open('config.js', 'r') as f:
         config_js = f.read()
-    config = ctx.execute(config_js)
-    KEY = config['EXPORT_COMMENTS_KEY']
+    config_js = config_js.replace('module.exports =', 'var config =')
+    config = ctx.execute(f"{config_js}; config;")
+    print("Config:", config)
+    KEY = config["EXPORT_COMMENTS_KEY"]
 except (FileNotFoundError, KeyError, py_mini_racer.JSEvalException) as e:
     print(f"Error loading configuration: {e}")
+    sys.exit(1)
+except py_mini_racer.JSParseException as e:
+    print(f"JavaScript parsing error: {e}")
     sys.exit(1)
 
 BASE_URL = "https://exportcomments.com"
@@ -33,27 +39,30 @@ HEADERS = {
 class SocialNetwork(Enum):
     """The social networks for which the URLs are extracted."""
 
-    # Name of the columns that contain the post URLs
+    """ 
+    Name of the columns that contain the post URLs
+    Facebook - Post URL -> Unnamed: 6
+    Twitter - Status URL -> Unnamed: 20
+    Instagram - URL -> Unnamed: 12
+    """
     FACEBOOK = "Unnamed: 6"
-    INSTAGRAM = "Unnamed: 20"
-    TWITTER = "Unnamed: 12"
+    INSTAGRAM = "Unnamed: 12"
+    TWITTER = "Unnamed: 20"
 
 
-def read_urls_from_extraction(file_path:str, social_network: SocialNetwork) -> list[str]:
+def read_urls_from_extraction(file_path: str, social_network: SocialNetwork) -> list[str]:
     """Reads the URLs from the extraction file."""
     
     df = pd.read_excel(file_path)
-
-    #Facebook - Post URL -> Unnamed: 6
-    #Twitter - Status URL -> Unnamed: 20
-    #Instagram - URL -> Unnamed: 12
-
     if social_network == SocialNetwork.FACEBOOK:
-        return df[social_network.value].dropna().tolist()
+        urls = df[social_network.value].dropna().tolist()
     elif social_network == SocialNetwork.TWITTER:
-        return df[social_network.value].dropna().tolist()
+        urls = df[social_network.value].dropna().tolist()
     elif social_network == SocialNetwork.INSTAGRAM:
-        return df[social_network.value].dropna().tolist()
+        urls = df[social_network.value].dropna().tolist()
+    
+    # Remove the first item from the list (header)
+    return urls[1:]
 
 
 def job_response(guid: str) -> dict:
@@ -81,23 +90,24 @@ def job_status(guid: str) -> str:
         raise ValueError(f"'status' ou índice 0 não encontrado nos dados: {data}")
 
 
-def get_response(guid: str):
+def get_response(guid: str) -> bool:
     """Gets the response for the job with the given guid."""
     time_sleep = 30
     while True:
         status = job_status(guid)
     
         if status == 'done':
-            break
+            return True
         elif status == 'error':
-            print(f"Erro ao processar a coleta {guid}. Status: {status}")
+            print(f"Erro ao processar a coleta {guid}. Status: '{status}'")
             error = job_response(guid)["data"][0]["error"]
             print(f"Error: {error}")
-            break
+            return False
             #sys.exit()
 
-        print(f"Status da coleta {guid}: {status}. Aguardando {time_sleep} segundos para verificar novamente...")
+        print(f"Status da coleta {guid}: '{status}'. Aguardando {time_sleep} segundos para verificar novamente...")
         sleep(time_sleep)
+
 
 def raw_url(guid: str) -> str:
     """Gets the url for the download of the raw exported data.
@@ -112,19 +122,6 @@ def raw_url(guid: str) -> str:
         raise ValueError(f"'rawUrl' ou índice 0 não encontrado nos dados: {data}")
 
 
-def xlsl_url(guid: str) -> str:
-    """Gets the url for the download of the raw exported data.
-    This reponse is relative to a base URL"""
-
-    response = job_response(guid)
-    data = response["data"]
-    
-    try:
-        return data[0]["downloadUrl"]
-    except KeyError:
-        raise ValueError(f"'downloadUrl' ou índice 0 não encontrado nos dados: {data}")
-
-
 def download_raw(raw_url: str) -> list[dict]:
     """Downloads the raw results as JSON from the given URL"""
 
@@ -133,25 +130,6 @@ def download_raw(raw_url: str) -> list[dict]:
     if response.status_code == 200:
         return response.json()
     raise ValueError(f"[FAILED TO DOWNLOAD] Status Code: {response.status_code}")
-
-
-def download_xlsl(download_url: str) -> bytes:
-    """Downloads the raw results as XLSX from the given URL"""
-    response = requests.get(f"{BASE_URL}{download_url}", headers=HEADERS, timeout=60)
-
-    if response.status_code == 200:
-        return response.content
-    raise ValueError(f"[FAILED TO DOWNLOAD] Status Code: {response.status_code}")
-
-
-def to_csv(data: list[dict], file_path: str):
-    """Writes the data to a CSV file."""
-    
-    try:
-        df = pd.DataFrame(data)
-        df.to_csv(file_path, index=False)
-    except Exception as e:
-        print(f"Erro ao salvar arquivo: {e}")
 
 
 def start_job(url: str) -> Optional[str]:
@@ -182,7 +160,6 @@ def start_job(url: str) -> Optional[str]:
 
         response_data = response.json()
         status_code = response_data["data"].get("status_code")
-        
         if status_code == 429:
             seconds_to_wait = response_data["data"]["seconds_to_wait"]
             print(f"Limite de taxa excedido. Aguardando {seconds_to_wait} segundos antes de tentar novamente...")
@@ -191,28 +168,32 @@ def start_job(url: str) -> Optional[str]:
 
         guid = response_data["data"].get("guid")
         job_status = response_data["data"].get("status")
-        
         if job_status is None:
             print(f"O trabalho foi iniciado, mas nenhum status foi retornado. Resposta: {response_data}")
             print("Tentando novamente...")
             continue
 
-        print(f"Iniciando coleta do post {url} . Status: {job_status}. ID: {guid}")
-
+        print(f"Iniciando coleta do post {url} Status: '{job_status}'. ID: {guid}")
         return guid
-
+    
     print(f"Falha ao iniciar o trabalho após {MAX_RETRIES} tentativas. URL: {url}")
     return None
 
 
-def process_job(url: str) -> pd.DataFrame:
+def process_job(url: str):
     """Processes the job and returns the data as a DataFrame."""
-    
-    guid = start_job(url)
-    if guid:
-        get_response(guid)
-        response = download_xlsl(download_url=xlsl_url(guid))
-        return pd.read_excel(response)
+    try:
+        guid = start_job(url)
+        if guid:
+            response = get_response(guid)
+            if response:
+                content = download_raw(raw_url(guid))
+                print(f"Coletado {len(content)} comentários do post {url}")
+                return content
+        return None
+    except Exception as e:
+        print(f"Erro ao processar o trabalho: {e}")
+        return None
 
 
 if __name__ == '__main__':
@@ -240,17 +221,20 @@ if __name__ == '__main__':
         sys.exit(1)
         
     urls = read_urls_from_extraction(args.file_path, social_network)
-    
+    print(f"Coletando comentários de {len(urls)} posts...")
     all_data = []
+
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(process_job, url) for url in urls]
         for future in as_completed(futures):
             data = future.result()
             if data is not None:
-                all_data.append(data)
+                all_data += data
     
     if all_data:
-        combined_df = pd.concat(all_data, ignore_index=True)
-        file_name = f"coleta_comentarios_{social_network.name.lower()}.xlsx"
-        combined_df.to_excel(file_name, index=False)
-        print(f"Arquivo salvo em: {file_name}")
+        file_name = f"comentarios_{social_network.name.lower()}.csv"
+        df = pd.DataFrame(all_data)
+        df.to_csv(file_name, index=False)
+        print(f"Comentários coletados salvos em {file_name}")
+    else:
+        print("Nenhum dado coletado.")
